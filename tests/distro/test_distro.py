@@ -408,6 +408,58 @@ class TestDistribution(TestCase):
         logger_mock.assert_not_called()
 
 
+class TestConfig(TestCase):
+    def test_constructor(self):
+        config = Config()
+
+        self.assertEqual(config.sampling_rate.value, "1.0")
+        self.assertEqual(config.logging_level.value, "warn")
+
+    def test_logging_setup_does_not_add_handlers_if_already_available_in_root_logger(self):
+        config = Config()
+
+        self.assertTrue(logging.root.handlers)
+
+        config._setup_logging()
+
+        for _logger in config._get_loggers():
+            with self.subTest(logger=_logger):
+                self.assertEqual(len(_logger.handlers), 0)
+
+    @mock.patch.dict(os.environ, {"OTEL_ENV": "otel", "ELASTIC_OTEL_ENV": "elastic_otel", "FOO": "foo"})
+    def test_log_env_vars_logs_configuration(self):
+        config = Config()
+        with self.assertLogs("elasticotel.distro.config", level="INFO") as cm:
+            config.log_env_vars()
+        self.assertEqual(
+            cm.output,
+            [
+                "INFO:elasticotel.distro.config:EDOT Configuration",
+                "INFO:elasticotel.distro.config:ELASTIC_OTEL_ENV: elastic_otel",
+                "INFO:elasticotel.distro.config:OTEL_ENV: otel",
+            ],
+        )
+
+    def test_to_dict(self):
+        config = Config()
+        self.assertEqual(config.to_dict(), {"logging_level": "warn", "sampling_rate": "1.0"})
+
+    @mock.patch.object(logging, "getLogger")
+    def test_update_loggers(self, get_logger_mock):
+        config = Config()
+
+        config.update_loggers(logging.WARNING)
+
+        get_logger_mock.assert_has_calls(
+            [
+                mock.call("opentelemetry"),
+                mock.call("elasticotel"),
+                mock.call().setLevel(logging.WARNING),
+                mock.call().setLevel(logging.WARNING),
+            ]
+        )
+
+
 class TestOpAMPHandler(TestCase):
     @mock.patch.object(logging, "getLogger")
     def test_does_nothing_without_remote_config(self, get_logger_mock):
@@ -419,20 +471,20 @@ class TestOpAMPHandler(TestCase):
         get_logger_mock.assert_not_called()
 
     @mock.patch("elasticotel.distro.config._get_config")
-    @mock.patch.object(Config, "_handle_logging")
-    @mock.patch.object(logging, "getLogger")
-    def test_ignores_non_elastic_filename(self, get_logger_mock, handle_logging_mock, get_config_mock):
-        get_config_mock.return_value = Config()
+    def test_ignores_non_elastic_filename(self, get_config_mock):
+        config = Config()
+        config.update_loggers = mock.Mock()
+        get_config_mock.return_value = config
         agent = mock.Mock()
         client = mock.Mock()
-        config = opamp_pb2.AgentConfigMap()
-        config.config_map["non-elastic"].body = json.dumps({"logging_level": "trace"}).encode()
-        config.config_map["non-elastic"].content_type = "application/json"
-        remote_config = opamp_pb2.AgentRemoteConfig(config=config, config_hash=b"1234")
+        agent_config = opamp_pb2.AgentConfigMap()
+        agent_config.config_map["non-elastic"].body = json.dumps({"logging_level": "trace"}).encode()
+        agent_config.config_map["non-elastic"].content_type = "application/json"
+        remote_config = opamp_pb2.AgentRemoteConfig(config=agent_config, config_hash=b"1234")
         message = opamp_pb2.ServerToAgent(remote_config=remote_config)
         opamp_handler(agent, client, message)
 
-        get_logger_mock.assert_not_called()
+        config.update_loggers.assert_not_called()
 
         client._update_remote_config_status.assert_called_once_with(
             remote_config_hash=b"1234", status=opamp_pb2.RemoteConfigStatuses_APPLIED, error_message=""
@@ -503,21 +555,20 @@ class TestOpAMPHandler(TestCase):
         client._build_full_state_message.assert_not_called()
 
     @mock.patch("elasticotel.distro.config._get_config")
-    @mock.patch.object(logging, "getLogger")
-    def test_sets_matching_logging_level(self, get_logger_mock, get_config_mock):
-        get_config_mock.return_value = Config()
+    def test_sets_matching_logging_level(self, get_config_mock):
+        config = Config()
+        config.update_loggers = mock.Mock()
+        get_config_mock.return_value = config
         agent = mock.Mock()
         client = mock.Mock()
-        config = opamp_pb2.AgentConfigMap()
-        config.config_map["elastic"].body = json.dumps({"logging_level": "trace"}).encode()
-        config.config_map["elastic"].content_type = "application/json"
-        remote_config = opamp_pb2.AgentRemoteConfig(config=config, config_hash=b"1234")
+        agent_config = opamp_pb2.AgentConfigMap()
+        agent_config.config_map["elastic"].body = json.dumps({"logging_level": "trace"}).encode()
+        agent_config.config_map["elastic"].content_type = "application/json"
+        remote_config = opamp_pb2.AgentRemoteConfig(config=agent_config, config_hash=b"1234")
         message = opamp_pb2.ServerToAgent(remote_config=remote_config)
         opamp_handler(agent, client, message)
 
-        get_logger_mock.assert_has_calls(
-            [mock.call("opentelemetry"), mock.call().setLevel(5), mock.call("elasticotel"), mock.call().setLevel(5)]
-        )
+        config.update_loggers.assert_called_once_with(5)
 
         client._update_remote_config_status.assert_called_once_with(
             remote_config_hash=b"1234", status=opamp_pb2.RemoteConfigStatuses_APPLIED, error_message=""
@@ -532,26 +583,20 @@ class TestOpAMPHandler(TestCase):
         client._build_full_state_message.assert_not_called()
 
     @mock.patch("elasticotel.distro.config._get_config")
-    @mock.patch.object(logging, "getLogger")
-    def test_sets_logging_to_default_info_without_logging_level_entry_in_config(self, get_logger_mock, get_config_mock):
-        get_config_mock.return_value = Config()
+    def test_sets_logging_to_default_info_without_logging_level_entry_in_config(self, get_config_mock):
+        config = Config()
+        config.update_loggers = mock.Mock()
+        get_config_mock.return_value = config
         agent = mock.Mock()
         client = mock.Mock()
-        config = opamp_pb2.AgentConfigMap()
-        config.config_map["elastic"].body = json.dumps({}).encode()
-        config.config_map["elastic"].content_type = "application/json"
-        remote_config = opamp_pb2.AgentRemoteConfig(config=config, config_hash=b"1234")
+        agent_config = opamp_pb2.AgentConfigMap()
+        agent_config.config_map["elastic"].body = json.dumps({}).encode()
+        agent_config.config_map["elastic"].content_type = "application/json"
+        remote_config = opamp_pb2.AgentRemoteConfig(config=agent_config, config_hash=b"1234")
         message = opamp_pb2.ServerToAgent(remote_config=remote_config)
         opamp_handler(agent, client, message)
 
-        get_logger_mock.assert_has_calls(
-            [
-                mock.call("opentelemetry"),
-                mock.call().setLevel(logging.WARNING),
-                mock.call("elasticotel"),
-                mock.call().setLevel(logging.WARNING),
-            ]
-        )
+        config.update_loggers.assert_called_once_with(logging.WARNING)
 
         client._update_remote_config_status.assert_called_once_with(
             remote_config_hash=b"1234", status=opamp_pb2.RemoteConfigStatuses_APPLIED, error_message=""
