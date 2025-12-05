@@ -110,7 +110,7 @@ class Config:
         # Without a handler, logs won't be displayed when running without a TTY (e.g., docker run without -it)
         # We only add a handler if neither the logger nor root has any handlers configured
         for _logger in self._get_loggers():
-            if not _logger.handlers and not logging.root.handlers:
+            if not _logger.handlers:  # and not logging.root.handlers:
                 handler = logging.StreamHandler()
                 handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
                 _logger.addHandler(handler)
