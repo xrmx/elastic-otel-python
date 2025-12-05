@@ -31,6 +31,7 @@ from opentelemetry._opamp.exceptions import (
     OpAMPRemoteConfigParseException,
 )
 from opentelemetry._opamp.proto import opamp_pb2 as opamp_pb2
+from opentelemetry.sdk._logs import LoggingHandler
 from opentelemetry.sdk.environment_variables import OTEL_LOG_LEVEL, OTEL_TRACES_SAMPLER_ARG
 
 
@@ -110,13 +111,13 @@ class Config:
         # Without a handler, logs won't be displayed when running without a TTY (e.g., docker run without -it)
         # We only add a handler if neither the logger nor root has any handlers configured
         for _logger in self._get_loggers():
-            if not _logger.handlers:  # and not logging.root.handlers:
+            if not _logger.handlers:
                 handler = logging.StreamHandler()
                 handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
                 _logger.addHandler(handler)
-                # FIXME: double check this works with the otel handler
-                # Don't propagate to root to avoid duplicate messages if root gets configured later
-                _logger.propagate = False
+                # We need to propagate if we have the OTel handler otherwise we don't see logs shipped, in the other
+                # cases we shouldn't
+                _logger.propagate = any(isinstance(_handler, LoggingHandler) for _handler in logging.root.handlers)
 
         # do validation, we only validate logging_level because sampling_rate is handled by the sdk already
         logging_level = _LOG_LEVELS_MAP.get(self.logging_level.value)
